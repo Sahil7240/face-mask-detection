@@ -2,23 +2,25 @@
 import streamlit as st
 import tensorflow as tf
 import numpy as np
+import cv2
 from PIL import Image
 
-st.set_page_config(
-    page_title="Face Mask Detection",
-    page_icon="😷"
-)
-
+st.set_page_config(page_title="Face Mask Detection", page_icon="😷")
 st.title("Face Mask Detection System")
-st.write("Upload a clear image of a person to predict mask status.")
+st.write("Upload a clear, front-facing photo.")
 
 @st.cache_resource
 def load_model():
     return tf.keras.models.load_model("face_mask_model.keras")
 
+@st.cache_resource
+def load_face_detector():
+    return cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+
 uploaded_file = st.file_uploader(
-    "Choose an image",
-    type=["jpg", "jpeg", "png"]
+    "Upload a face image", type=["jpg", "jpeg", "png"]
 )
 
 if uploaded_file is not None:
@@ -26,28 +28,45 @@ if uploaded_file is not None:
     st.image(image, caption="Uploaded Image", width=300)
 
     if st.button("Predict"):
-        model = load_model()
+        img = np.array(image)
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-        image_array = np.array(
-            image.resize((64, 64)),
-            dtype=np.uint8
-        )
-        image_array = np.expand_dims(image_array, axis=0)
-
-        score = float(
-            model.predict(image_array, verbose=0)[0][0]
+        detector = load_face_detector()
+        faces = detector.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
         )
 
-        st.write(f"Raw model score: {score:.4f}")
-
-        if score >= 0.5:
-            st.error("Prediction: WITHOUT MASK")
-            st.write(f"Model score: {score:.1%}")
+        if len(faces) == 0:
+            st.warning(
+                "No face detected. Try a clear, front-facing photo "
+                "with the face closer to the camera."
+            )
         else:
-            st.success("Prediction: WITH MASK")
-            st.write(f"Model score: {1-score:.1%}")
+            # Select the largest detected face
+            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
 
-st.caption(
-    "Note: This classifier evaluates the entire image. "
-    "It may give incorrect results for unclear images or images without faces."
-)
+            # Add a small margin around the face
+            margin = int(0.15 * max(w, h))
+            x1 = max(0, x - margin)
+            y1 = max(0, y - margin)
+            x2 = min(img.shape[1], x + w + margin)
+            y2 = min(img.shape[0], y + h + margin)
+
+            face = img[y1:y2, x1:x2]
+            face = cv2.resize(face, (64, 64))
+
+            model = load_model()
+            batch = np.expand_dims(face.astype(np.uint8), axis=0)
+            score = float(model.predict(batch, verbose=0)[0][0])
+
+            st.image(face, caption="Face used for prediction", width=200)
+
+            if score >= 0.5:
+                st.error(f"WITHOUT MASK — score: {score:.1%}")
+            else:
+                st.success(f"WITH MASK — score: {1-score:.1%}")
+
+            st.caption(
+                "Experimental classifier. Predictions can be incorrect, "
+                "especially for side-facing faces or unusual masks."
+            )
